@@ -14,6 +14,14 @@ export function formatPrice(cents: number | null | undefined): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
 
+/**
+ * Format an amount in cents to a USD display string, e.g. 123456 → "$1,234.56".
+ * Unlike formatPrice, this never collapses to "Free" — it always shows a dollar amount.
+ */
+export function formatCurrency(cents: number): string {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100);
+}
+
 export function formatDuration(
   minutes: number,
   showHours: boolean,
