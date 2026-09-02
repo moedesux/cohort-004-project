@@ -88,15 +88,24 @@ describe("analyticsService", () => {
       .get();
   }
 
+  function seedRating(userId: number, courseId: number, rating: number) {
+    return testDb
+      .insert(schema.courseRatings)
+      .values({ userId, courseId, rating })
+      .returning()
+      .get();
+  }
+
   // ─── getCourseAnalytics ───
 
   describe("getCourseAnalytics", () => {
-    it("returns zeros when the course has no enrollments or purchases", () => {
+    it("returns zeros and null rating for a course with no data", () => {
       expect(getCourseAnalytics(base.course.id)).toEqual({
         revenue: 0,
         enrollments: 0,
         completedStudents: 0,
         avgCompletionRate: 0,
+        rating: null,
       });
     });
 
@@ -173,6 +182,53 @@ describe("analyticsService", () => {
       expect(analytics.enrollments).toBe(1);
       expect(analytics.completedStudents).toBe(1);
     });
+
+    it("computes the all-time average rating to one decimal", () => {
+      const student2 = createStudent("Student Two", "student2@example.com");
+      const student3 = createStudent("Student Three", "student3@example.com");
+
+      // One rating per student per course.
+      seedRating(base.user.id, base.course.id, 5);
+      seedRating(student2.id, base.course.id, 4);
+      seedRating(student3.id, base.course.id, 4);
+
+      // (5 + 4 + 4) / 3 = 4.333... → 4.3
+      expect(getCourseAnalytics(base.course.id).rating).toBe(4.3);
+    });
+
+    it("rounds the average rating half-up to one decimal", () => {
+      const student2 = createStudent("Student Two", "student2@example.com");
+      const student3 = createStudent("Student Three", "student3@example.com");
+      const student4 = createStudent("Student Four", "student4@example.com");
+
+      seedRating(base.user.id, base.course.id, 5);
+      seedRating(student2.id, base.course.id, 5);
+      seedRating(student3.id, base.course.id, 5);
+      seedRating(student4.id, base.course.id, 4);
+
+      // (5 + 5 + 5 + 4) / 4 = 4.75 → 4.8
+      expect(getCourseAnalytics(base.course.id).rating).toBe(4.8);
+    });
+
+    it("rating is NOT gated by the date window", () => {
+      seedRating(base.user.id, base.course.id, 4);
+      // Purchase dated outside the February window.
+      seedPurchase(
+        base.user.id,
+        base.course.id,
+        20000,
+        "2026-01-10T10:00:00.000Z"
+      );
+
+      const analytics = getCourseAnalytics(
+        base.course.id,
+        "2026-02-01",
+        "2026-02-28"
+      );
+      // Revenue respects the window; rating is all-time.
+      expect(analytics.revenue).toBe(0);
+      expect(analytics.rating).toBe(4);
+    });
   });
 
   // ─── getInstructorAnalyticsSummary ───
@@ -215,6 +271,7 @@ describe("analyticsService", () => {
           enrollments: 0,
           completedStudents: 0,
           avgCompletionRate: 0,
+          rating: null,
         },
       ]);
     });
@@ -273,6 +330,7 @@ describe("analyticsService", () => {
           enrollments: 4,
           completedStudents: 2,
           avgCompletionRate: 50,
+          rating: null,
         },
         {
           id: courseB.id,
@@ -283,6 +341,7 @@ describe("analyticsService", () => {
           enrollments: 3,
           completedStudents: 1,
           avgCompletionRate: 33,
+          rating: null,
         },
         {
           id: courseC.id,
@@ -293,6 +352,7 @@ describe("analyticsService", () => {
           enrollments: 0,
           completedStudents: 0,
           avgCompletionRate: 0,
+          rating: null,
         },
       ]);
     });
@@ -303,6 +363,43 @@ describe("analyticsService", () => {
 
       const summary = getInstructorAnalyticsSummary(base.instructor.id);
       expect(summary.totalStudents).toBe(2);
+    });
+
+    it("includes per-course all-time rating in courseDetails", () => {
+      const courseB = createCourse("Course B", "course-b");
+      const student2 = createStudent("Student Two", "student2@example.com");
+
+      // Course A (base.course): 5 and 4 → 4.5. Course B: no ratings → null.
+      seedRating(base.user.id, base.course.id, 5);
+      seedRating(student2.id, base.course.id, 4);
+
+      const summary = getInstructorAnalyticsSummary(base.instructor.id);
+
+      // id ASC order: base.course first, then course B.
+      expect(summary.courseDetails).toEqual([
+        {
+          id: base.course.id,
+          title: "Test Course",
+          slug: "test-course",
+          status: schema.CourseStatus.Published,
+          revenue: 0,
+          enrollments: 0,
+          completedStudents: 0,
+          avgCompletionRate: 0,
+          rating: 4.5,
+        },
+        {
+          id: courseB.id,
+          title: "Course B",
+          slug: "course-b",
+          status: schema.CourseStatus.Published,
+          revenue: 0,
+          enrollments: 0,
+          completedStudents: 0,
+          avgCompletionRate: 0,
+          rating: null,
+        },
+      ]);
     });
   });
 });

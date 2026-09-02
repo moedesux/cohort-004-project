@@ -1,6 +1,12 @@
 import { eq, and, gte, lte, isNotNull, sql } from "drizzle-orm";
 import { db } from "~/db";
-import { courses, enrollments, purchases, CourseStatus } from "~/db/schema";
+import {
+  courses,
+  enrollments,
+  purchases,
+  courseRatings,
+  CourseStatus,
+} from "~/db/schema";
 
 // ─── Analytics Service ───
 // Aggregates revenue, enrollment, and completion metrics for the instructor
@@ -11,6 +17,7 @@ export interface CourseAnalytics {
   enrollments: number; // raw enrollment row count (no dedup)
   completedStudents: number; // enrollments with completedAt set
   avgCompletionRate: number; // 0-100, rounded int
+  rating: number | null; // all-time avg, 1 decimal, null when no ratings
 }
 
 export interface CourseDetail {
@@ -22,6 +29,7 @@ export interface CourseDetail {
   enrollments: number;
   completedStudents: number;
   avgCompletionRate: number;
+  rating: number | null; // all-time avg, 1 decimal, null when no ratings
 }
 
 export interface InstructorAnalyticsSummary {
@@ -41,6 +49,9 @@ export interface InstructorAnalyticsSummary {
  *   enrollment row regardless of when it happened — the window gates
  *   enrollment, not completion (a student who enrolled inside the window but
  *   completed outside it still counts toward `completedStudents`).
+ * - `rating` is the all-time average rating (1 decimal, null when the course
+ *   has no ratings). It is intentionally NOT gated by the window: a course's
+ *   rating is a standing reputation metric, not a per-period one.
  *
  * Window bounds are compared as ISO text (lexicographic), inclusive on both
  * ends (`>=` start, `<=` end).
@@ -85,6 +96,22 @@ function computeCourseAnalytics(
   const totalEnrollments = enrollmentRow?.count ?? 0;
   const completedStudents = completedRow?.count ?? 0;
 
+  // All-time by design — the date window is deliberately not applied to
+  // ratings (same rounding convention as ratingService.getAverageRating).
+  const ratingRow = db
+    .select({
+      average: sql<number | null>`avg(${courseRatings.rating})`,
+      count: sql<number>`count(*)`,
+    })
+    .from(courseRatings)
+    .where(eq(courseRatings.courseId, courseId))
+    .get();
+
+  const rating =
+    ratingRow && ratingRow.count > 0 && ratingRow.average !== null
+      ? Math.round(ratingRow.average * 10) / 10
+      : null;
+
   return {
     revenue,
     enrollments: totalEnrollments,
@@ -93,6 +120,7 @@ function computeCourseAnalytics(
       totalEnrollments === 0
         ? 0
         : Math.round((completedStudents / totalEnrollments) * 100),
+    rating,
   };
 }
 
@@ -104,6 +132,9 @@ function computeCourseAnalytics(
  * enrollment counts. The window gates enrollment, not completion — a student
  * who enrolled inside the window but completed outside it still counts toward
  * `completedStudents`.
+ *
+ * `rating` is all-time and intentionally window-independent: it is the
+ * course's standing average rating (1 decimal, null when unrated).
  */
 export function getCourseAnalytics(
   courseId: number,
@@ -121,6 +152,10 @@ export function getCourseAnalytics(
  * `avgCompletionRate` averages the (already rounded) per-course rates over
  * courses with at least one enrollment; courses with no enrollments are
  * excluded from the average.
+ *
+ * Each entry in `courseDetails` includes `rating`, the course's all-time
+ * average rating (1 decimal, null when unrated) — intentionally independent
+ * of any date window, since this summary is an all-time hub view.
  */
 export function getInstructorAnalyticsSummary(
   instructorId: number

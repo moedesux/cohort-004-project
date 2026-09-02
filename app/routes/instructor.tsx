@@ -1,6 +1,12 @@
+import { useState } from "react";
 import { Link, data, isRouteErrorResponse } from "react-router";
 import type { Route } from "./+types/instructor";
 import { getInstructorAnalyticsSummary } from "~/services/analyticsService";
+import {
+  sortCourseDetails,
+  type CourseSortKey,
+  type SortState,
+} from "~/lib/sortCourses";
 import { getCurrentUserId } from "~/lib/session";
 import { getUserById } from "~/services/userService";
 import { formatCurrency } from "~/lib/utils";
@@ -10,6 +16,9 @@ import { Skeleton } from "~/components/ui/skeleton";
 import { StatCard } from "~/components/analytics/stat-card";
 import {
   AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
   BookOpen,
   DollarSign,
   GraduationCap,
@@ -87,6 +96,48 @@ function completionBar(rate: number) {
   );
 }
 
+function SortableTh({
+  label,
+  sortKey,
+  sort,
+  onSortClick,
+}: {
+  label: string;
+  sortKey: CourseSortKey;
+  sort: SortState;
+  onSortClick: (key: CourseSortKey) => void;
+}) {
+  const direction = sort && sort.key === sortKey ? sort.direction : null;
+  const Icon =
+    direction === "asc"
+      ? ArrowUp
+      : direction === "desc"
+        ? ArrowDown
+        : ArrowUpDown;
+
+  return (
+    <th
+      className="px-4 py-3 text-left font-medium text-muted-foreground"
+      aria-sort={
+        direction === "asc"
+          ? "ascending"
+          : direction === "desc"
+            ? "descending"
+            : "none"
+      }
+    >
+      <button
+        type="button"
+        onClick={() => onSortClick(sortKey)}
+        className="inline-flex items-center gap-1 text-left font-medium text-muted-foreground hover:text-foreground"
+      >
+        {label}
+        <Icon className="inline size-3.5" />
+      </button>
+    </th>
+  );
+}
+
 export function HydrateFallback() {
   return (
     <div className="mx-auto max-w-7xl p-6 lg:p-8">
@@ -102,7 +153,29 @@ export function HydrateFallback() {
           <Skeleton key={i} className="h-20 rounded-xl" />
         ))}
       </div>
-      <Skeleton className="mt-8 h-64 rounded-xl" />
+      <div className="mt-8 rounded-xl border">
+        <div className="flex h-11 items-center gap-4 bg-muted/30 px-4">
+          <Skeleton className="h-4 w-16" />
+          <Skeleton className="h-4 w-14" />
+          <Skeleton className="h-4 w-16" />
+          <Skeleton className="h-4 w-28" />
+          <Skeleton className="h-4 w-12" />
+          <Skeleton className="ml-auto h-4 w-12" />
+        </div>
+        {Array.from({ length: 5 }).map((_, i) => (
+          <div
+            key={i}
+            className="flex h-[68px] items-center gap-4 border-b px-4 last:border-0"
+          >
+            <Skeleton className="h-4 w-48" />
+            <Skeleton className="h-4 w-20" />
+            <Skeleton className="h-4 w-10" />
+            <Skeleton className="h-2 w-40 rounded-full" />
+            <Skeleton className="h-4 w-10" />
+            <Skeleton className="ml-auto h-7 w-16 rounded-md" />
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -111,6 +184,22 @@ export default function InstructorDashboard({
   loaderData,
 }: Route.ComponentProps) {
   const { summary } = loaderData;
+
+  // null = unsorted (loader order: course id ASC). Same key toggles direction;
+  // a new key starts at "asc".
+  const [sort, setSort] = useState<SortState>(null);
+
+  function handleSortClick(key: CourseSortKey) {
+    setSort((current) =>
+      current && current.key === key
+        ? { key, direction: current.direction === "asc" ? "desc" : "asc" }
+        : { key, direction: "asc" }
+    );
+  }
+
+  const rows = sort
+    ? sortCourseDetails(summary.courseDetails, sort.key, sort.direction)
+    : summary.courseDetails;
 
   return (
     <div className="mx-auto max-w-7xl p-6 lg:p-8">
@@ -206,22 +295,37 @@ export default function InstructorDashboard({
                         <th className="px-4 py-3 text-left font-medium text-muted-foreground">
                           Course
                         </th>
-                        <th className="px-4 py-3 text-left font-medium text-muted-foreground">
-                          Revenue
-                        </th>
-                        <th className="px-4 py-3 text-left font-medium text-muted-foreground">
-                          Students
-                        </th>
-                        <th className="px-4 py-3 text-left font-medium text-muted-foreground">
-                          Completion Rate
-                        </th>
+                        <SortableTh
+                          label="Revenue"
+                          sortKey="revenue"
+                          sort={sort}
+                          onSortClick={handleSortClick}
+                        />
+                        <SortableTh
+                          label="Students"
+                          sortKey="enrollments"
+                          sort={sort}
+                          onSortClick={handleSortClick}
+                        />
+                        <SortableTh
+                          label="Completion Rate"
+                          sortKey="avgCompletionRate"
+                          sort={sort}
+                          onSortClick={handleSortClick}
+                        />
+                        <SortableTh
+                          label="Rating"
+                          sortKey="rating"
+                          sort={sort}
+                          onSortClick={handleSortClick}
+                        />
                         <th className="px-4 py-3 text-right font-medium text-muted-foreground">
                           Actions
                         </th>
                       </tr>
                     </thead>
                     <tbody>
-                      {summary.courseDetails.map((course) => (
+                      {rows.map((course) => (
                         <tr
                           key={course.id}
                           className="border-b transition-colors last:border-0 hover:bg-muted/40"
@@ -241,6 +345,15 @@ export default function InstructorDashboard({
                               completionBar(course.avgCompletionRate)
                             ) : (
                               <span className="text-muted-foreground">—</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3">
+                            {course.rating === null ? (
+                              <span className="text-muted-foreground">—</span>
+                            ) : (
+                              <span className="font-medium">
+                                {course.rating.toFixed(1)} ★
+                              </span>
                             )}
                           </td>
                           <td className="px-4 py-3 text-right">
