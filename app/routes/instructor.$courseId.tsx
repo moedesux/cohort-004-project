@@ -41,6 +41,7 @@ import { getUserById } from "~/services/userService";
 import { CourseStatus, UserRole } from "~/db/schema";
 import { formatDuration, formatPrice } from "~/lib/utils";
 import { MonacoMarkdownEditor } from "~/components/monaco-markdown-editor";
+import { AnalyticsTab } from "~/components/analytics/analytics-tab";
 import { Card, CardContent, CardHeader } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
@@ -69,6 +70,7 @@ import {
   Award,
   Globe,
   FileText,
+  BarChart3,
 } from "lucide-react";
 import { data, isRouteErrorResponse } from "react-router";
 import { z } from "zod";
@@ -1193,6 +1195,10 @@ export default function InstructorCourseEditor({
             <Users className="size-4" />
             Students
           </TabsTrigger>
+          <TabsTrigger value="analytics">
+            <BarChart3 className="size-4" />
+            Analytics
+          </TabsTrigger>
         </TabsList>
 
         {/* Content Tab */}
@@ -1651,6 +1657,11 @@ export default function InstructorCourseEditor({
               </CardContent>
             </Card>
           )}
+        </TabsContent>
+
+        {/* Analytics Tab */}
+        <TabsContent value="analytics" className="mt-6">
+          <AnalyticsTab courseId={course.id} courseSlug={course.slug} />
         </TabsContent>
       </Tabs>
     </div>
