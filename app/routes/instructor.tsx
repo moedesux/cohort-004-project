@@ -1,15 +1,21 @@
-import { Link } from "react-router";
+import { Link, data, isRouteErrorResponse } from "react-router";
 import type { Route } from "./+types/instructor";
-import { getCoursesByInstructor, getLessonCountForCourse } from "~/services/courseService";
-import { getEnrollmentCountForCourse } from "~/services/enrollmentService";
+import { getInstructorAnalyticsSummary } from "~/services/analyticsService";
 import { getCurrentUserId } from "~/lib/session";
 import { getUserById } from "~/services/userService";
-import { Card, CardContent, CardFooter, CardHeader } from "~/components/ui/card";
+import { formatCurrency } from "~/lib/utils";
+import { Card, CardContent } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
 import { Skeleton } from "~/components/ui/skeleton";
-import { AlertTriangle, BookOpen, GraduationCap, Plus, Users } from "lucide-react";
-import { CourseImage } from "~/components/course-image";
-import { data, isRouteErrorResponse } from "react-router";
+import { StatCard } from "~/components/analytics/stat-card";
+import {
+  AlertTriangle,
+  BookOpen,
+  DollarSign,
+  GraduationCap,
+  Plus,
+  Users,
+} from "lucide-react";
 import { CourseStatus, UserRole } from "~/db/schema";
 
 export function meta() {
@@ -36,27 +42,8 @@ export async function loader({ request }: Route.LoaderArgs) {
     });
   }
 
-  const instructorCourses = getCoursesByInstructor(currentUserId);
-
-  const coursesWithStats = instructorCourses.map((course) => {
-    const lessonCount = getLessonCountForCourse(course.id);
-    const enrollmentCount = getEnrollmentCountForCourse(course.id);
-
-    return {
-      id: course.id,
-      title: course.title,
-      slug: course.slug,
-      description: course.description,
-      status: course.status,
-      coverImageUrl: course.coverImageUrl,
-      lessonCount,
-      enrollmentCount,
-      createdAt: course.createdAt,
-      updatedAt: course.updatedAt,
-    };
-  });
-
-  return { courses: coursesWithStats };
+  const summary = getInstructorAnalyticsSummary(currentUserId);
+  return { summary };
 }
 
 function statusBadge(status: string) {
@@ -84,6 +71,22 @@ function statusBadge(status: string) {
   }
 }
 
+function completionBar(rate: number) {
+  const color =
+    rate >= 70 ? "bg-green-500" : rate >= 40 ? "bg-amber-500" : "bg-red-500";
+  return (
+    <div className="flex items-center gap-2">
+      <div className="h-2 w-full max-w-40 overflow-hidden rounded-full bg-muted">
+        <div
+          className={`h-full rounded-full ${color}`}
+          style={{ width: `${rate}%` }}
+        />
+      </div>
+      <span className="text-xs text-muted-foreground">{rate}%</span>
+    </div>
+  );
+}
+
 export function HydrateFallback() {
   return (
     <div className="mx-auto max-w-7xl p-6 lg:p-8">
@@ -94,26 +97,12 @@ export function HydrateFallback() {
         </div>
         <Skeleton className="h-10 w-32" />
       </div>
-      <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-        {Array.from({ length: 3 }).map((_, i) => (
-          <Card key={i} className="flex flex-col">
-            <Skeleton className="aspect-video rounded-b-none rounded-t-lg" />
-            <CardHeader>
-              <Skeleton className="h-5 w-3/4" />
-              <Skeleton className="h-4 w-full" />
-            </CardHeader>
-            <CardContent className="flex-1">
-              <div className="flex items-center gap-4">
-                <Skeleton className="h-4 w-20" />
-                <Skeleton className="h-4 w-20" />
-              </div>
-            </CardContent>
-            <CardFooter>
-              <Skeleton className="h-10 w-full" />
-            </CardFooter>
-          </Card>
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <Skeleton key={i} className="h-20 rounded-xl" />
         ))}
       </div>
+      <Skeleton className="mt-8 h-64 rounded-xl" />
     </div>
   );
 }
@@ -121,7 +110,7 @@ export function HydrateFallback() {
 export default function InstructorDashboard({
   loaderData,
 }: Route.ComponentProps) {
-  const { courses } = loaderData;
+  const { summary } = loaderData;
 
   return (
     <div className="mx-auto max-w-7xl p-6 lg:p-8">
@@ -138,7 +127,8 @@ export default function InstructorDashboard({
         <div>
           <h1 className="text-3xl font-bold">My Courses</h1>
           <p className="mt-1 text-muted-foreground">
-            Manage your courses and track enrollments
+            Overview of revenue, students, and completion across all your
+            courses
           </p>
         </div>
         <Link to="/instructor/new">
@@ -149,7 +139,7 @@ export default function InstructorDashboard({
         </Link>
       </div>
 
-      {courses.length === 0 ? (
+      {summary.courseDetails.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-center">
           <GraduationCap className="mb-4 size-12 text-muted-foreground/50" />
           <h2 className="text-lg font-medium">No courses yet</h2>
@@ -164,58 +154,114 @@ export default function InstructorDashboard({
           </Link>
         </div>
       ) : (
-        <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-          {courses.map((course) => (
-            <Card key={course.id} className="flex flex-col overflow-hidden pt-0">
-              <Link to={`/courses/${course.slug}`} className="aspect-video overflow-hidden">
-                <CourseImage
-                  src={course.coverImageUrl}
-                  alt={course.title}
-                  className="h-full w-full object-cover transition-transform hover:scale-105"
-                />
+        <div className="space-y-8">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <StatCard
+              icon={DollarSign}
+              tone="blue"
+              value={formatCurrency(summary.totalRevenue)}
+              label="Total Revenue"
+            />
+            <StatCard
+              icon={Users}
+              tone="green"
+              value={String(summary.totalStudents)}
+              label="Total Students"
+            />
+            <StatCard
+              icon={GraduationCap}
+              tone="purple"
+              value={`${summary.avgCompletionRate}%`}
+              label="Avg Completion"
+            />
+            <StatCard
+              icon={BookOpen}
+              tone="amber"
+              value={`${summary.publishedCourses} published`}
+              label="Courses"
+            />
+          </div>
+
+          {summary.totalRevenue === 0 && summary.totalStudents === 0 ? (
+            <div className="rounded-xl border bg-muted/30 p-6">
+              <h2 className="font-medium">No analytics data yet</h2>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Sales and enrollment numbers will appear here once students buy
+                or enroll in your courses.
+              </p>
+              <Link
+                to={`/courses/${summary.courseDetails[0].slug}`}
+                className="mt-3 inline-block text-sm font-medium hover:text-foreground"
+              >
+                View your public course page →
               </Link>
-              <CardHeader>
-                <div className="flex items-start justify-between gap-2">
-                  <Link
-                    to={`/courses/${course.slug}`}
-                    className="text-lg font-semibold leading-tight hover:text-primary"
-                  >
-                    {course.title}
-                  </Link>
-                  {statusBadge(course.status)}
-                </div>
-                <p className="line-clamp-2 text-sm text-muted-foreground">
-                  {course.description}
-                </p>
-              </CardHeader>
-              <CardContent className="flex-1">
-                <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                  <div className="flex items-center gap-1.5">
-                    <BookOpen className="size-4" />
-                    <span>
-                      {course.lessonCount}{" "}
-                      {course.lessonCount === 1 ? "lesson" : "lessons"}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <Users className="size-4" />
-                    <span>
-                      {course.enrollmentCount}{" "}
-                      {course.enrollmentCount === 1 ? "student" : "students"}
-                    </span>
-                  </div>
+            </div>
+          ) : (
+            <Card>
+              <CardContent className="p-0">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b bg-muted/30">
+                        <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                          Course
+                        </th>
+                        <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                          Revenue
+                        </th>
+                        <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                          Students
+                        </th>
+                        <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                          Completion Rate
+                        </th>
+                        <th className="px-4 py-3 text-right font-medium text-muted-foreground">
+                          Actions
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {summary.courseDetails.map((course) => (
+                        <tr
+                          key={course.id}
+                          className="border-b transition-colors last:border-0 hover:bg-muted/40"
+                        >
+                          <td className="px-4 py-3">
+                            <div className="font-medium">{course.title}</div>
+                            <div className="mt-1">
+                              {statusBadge(course.status)}
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 font-medium">
+                            {formatCurrency(course.revenue)}
+                          </td>
+                          <td className="px-4 py-3">{course.enrollments}</td>
+                          <td className="px-4 py-3">
+                            {course.enrollments > 0 ? (
+                              completionBar(course.avgCompletionRate)
+                            ) : (
+                              <span className="text-muted-foreground">—</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            <Link to={`/instructor/${course.id}`}>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 px-2 text-xs"
+                              >
+                                View
+                              </Button>
+                            </Link>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               </CardContent>
-              <CardFooter>
-                <Link to={`/instructor/${course.id}`} className="w-full">
-                  <Button className="w-full" variant="outline">
-                    <BookOpen className="mr-2 size-4" />
-                    Edit Course
-                  </Button>
-                </Link>
-              </CardFooter>
             </Card>
-          ))}
+          )}
         </div>
       )}
     </div>
