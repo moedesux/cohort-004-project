@@ -17,3 +17,6 @@
 # JetBrains
 /.idea/
 
+# Local tool state
+/.qwen/
+
