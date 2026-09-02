@@ -37,8 +37,6 @@ export default [
       "instructor/:courseId/students",
       "routes/instructor.$courseId.students.tsx"
     ),
-    route("prototype/hub", "routes/prototype/hub.tsx"),
-    route("prototype/course", "routes/prototype/course.tsx"),
     route("admin/users", "routes/admin.users.tsx"),
     route("admin/courses", "routes/admin.courses.tsx"),
     route("admin/categories", "routes/admin.categories.tsx"),
