@@ -57,6 +57,14 @@ export interface LessonDropOffPoint {
   rate: number; // 0-100, startedCount as a % of the course's widest lesson, Math.round
 }
 
+export interface LessonCompletionRate {
+  lessonId: number;
+  title: string;
+  startedCount: number; // students with an in_progress or completed record (distinct users)
+  completedCount: number; // students with a completed record (distinct users)
+  rate: number; // 0-100, completedCount / startedCount, Math.round; 0 when startedCount is 0
+}
+
 /**
  * Computes the analytics metrics for a single course, optionally restricted
  * to an inclusive ISO date window:
@@ -434,4 +442,134 @@ export function getLessonDropOffRates(courseId: number): LessonDropOffPoint[] {
           : Math.round((startedCount / maxStartedCount) * 100),
     };
   });
+}
+
+/**
+ * Builds the per-lesson completion breakdown for a single course: one entry
+ * per lesson, sorted by `rate` ASCENDING (worst-performing lesson first).
+ * Equal rates are broken in course order — modules by `position` ASC, then
+ * lessons by `position` ASC within each module.
+ *
+ * A student "starts" a lesson when they have a `lesson_progress` row with
+ * status `in_progress` or `completed`; `not_started` rows and students with
+ * no row do not count. `startedCount` and `completedCount` each count
+ * distinct students, so duplicate rows for one user cannot inflate them
+ * (`completedCount` counts only `completed` rows).
+ *
+ * `rate` is `completedCount` as a percentage of `startedCount`, rounded with
+ * `Math.round`. When nobody has started a lesson, its `rate` is 0 — never
+ * NaN. Returns `[]` for a course with no modules or no lessons.
+ */
+export function getLessonCompletionRates(
+  courseId: number
+): LessonCompletionRate[] {
+  const courseModules = db
+    .select({ id: modules.id })
+    .from(modules)
+    .where(eq(modules.courseId, courseId))
+    .orderBy(modules.position)
+    .all();
+
+  if (courseModules.length === 0) return [];
+
+  const courseLessons = db
+    .select({
+      id: lessons.id,
+      title: lessons.title,
+      moduleId: lessons.moduleId,
+      position: lessons.position,
+    })
+    .from(lessons)
+    .where(
+      inArray(
+        lessons.moduleId,
+        courseModules.map((m) => m.id)
+      )
+    )
+    .all();
+
+  if (courseLessons.length === 0) return [];
+
+  // Modules are already sorted by position, so a module's index in that list
+  // is its rank — lessons sort by (module rank, lesson position), which is
+  // the order a student walks the course.
+  const moduleRank = new Map(courseModules.map((m, index) => [m.id, index]));
+  const orderedLessons = [...courseLessons].sort(
+    (a, b) =>
+      moduleRank.get(a.moduleId)! - moduleRank.get(b.moduleId)! ||
+      a.position - b.position
+  );
+
+  const courseOrder = new Map(
+    orderedLessons.map((lesson, index) => [lesson.id, index])
+  );
+
+  const startedRows = db
+    .select({
+      lessonId: lessonProgress.lessonId,
+      startedCount: sql<number>`count(distinct ${lessonProgress.userId})`,
+    })
+    .from(lessonProgress)
+    .where(
+      and(
+        inArray(
+          lessonProgress.lessonId,
+          courseLessons.map((l) => l.id)
+        ),
+        inArray(lessonProgress.status, [
+          LessonProgressStatus.InProgress,
+          LessonProgressStatus.Completed,
+        ])
+      )
+    )
+    .groupBy(lessonProgress.lessonId)
+    .all();
+
+  const startedByLesson = new Map(
+    startedRows.map((row) => [row.lessonId, row.startedCount])
+  );
+
+  const completedRows = db
+    .select({
+      lessonId: lessonProgress.lessonId,
+      completedCount: sql<number>`count(distinct ${lessonProgress.userId})`,
+    })
+    .from(lessonProgress)
+    .where(
+      and(
+        inArray(
+          lessonProgress.lessonId,
+          courseLessons.map((l) => l.id)
+        ),
+        eq(lessonProgress.status, LessonProgressStatus.Completed)
+      )
+    )
+    .groupBy(lessonProgress.lessonId)
+    .all();
+
+  const completedByLesson = new Map(
+    completedRows.map((row) => [row.lessonId, row.completedCount])
+  );
+
+  const rates = orderedLessons.map((lesson) => {
+    const startedCount = startedByLesson.get(lesson.id) ?? 0;
+    const completedCount = completedByLesson.get(lesson.id) ?? 0;
+    return {
+      lessonId: lesson.id,
+      title: lesson.title,
+      startedCount,
+      completedCount,
+      rate:
+        startedCount === 0
+          ? 0
+          : Math.round((completedCount / startedCount) * 100),
+    };
+  });
+
+  // Worst-performing lesson first; equal rates keep course order.
+  return rates.sort(
+    (a, b) =>
+      a.rate - b.rate ||
+      courseOrder.get(a.lessonId)! - courseOrder.get(b.lessonId)!
+  );
 }

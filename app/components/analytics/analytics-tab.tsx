@@ -1,14 +1,23 @@
 import { useEffect } from "react";
 import { Link, useFetcher } from "react-router";
-import { DollarSign, PlayCircle, TrendingUp, Users } from "lucide-react";
+import {
+  BookOpen,
+  CheckCircle2,
+  DollarSign,
+  PlayCircle,
+  TrendingUp,
+  Users,
+} from "lucide-react";
 import type {
   EnrollmentTimelinePoint,
+  LessonCompletionRate,
   LessonDropOffPoint,
 } from "~/services/analyticsService";
 import { formatCurrency } from "~/lib/utils";
 import { StatCard } from "~/components/analytics/stat-card";
 import { RevenueTimelineChart } from "~/components/analytics/revenue-timeline-chart";
 import { DropOffFunnelChart } from "~/components/analytics/drop-off-funnel-chart";
+import { LessonCompletionChart } from "~/components/analytics/lesson-completion-chart";
 import { Skeleton } from "~/components/ui/skeleton";
 import { Button } from "~/components/ui/button";
 import { Card, CardContent } from "~/components/ui/card";
@@ -19,6 +28,7 @@ interface AnalyticsTabData {
   timeline: EnrollmentTimelinePoint[];
   completionRate: number; // 0-100, rounded
   dropOff: LessonDropOffPoint[];
+  lessonCompletion: LessonCompletionRate[];
 }
 
 // The resource route responds to failures with 4xx JSON bodies (plain
@@ -31,11 +41,11 @@ function isAnalyticsData(result: AnalyticsTabResult): result is AnalyticsTabData
   return typeof result === "object" && result !== null;
 }
 
-// Section anchors for the sticky nav. Future sections (Content) are appended
-// here.
+// Section anchors for the sticky nav.
 const sections: Array<{ id: string; label: string }> = [
   { id: "analytics-sales", label: "Sales" },
   { id: "analytics-engagement", label: "Engagement" },
+  { id: "analytics-content", label: "Content" },
 ];
 
 interface AnalyticsTabProps {
@@ -67,6 +77,11 @@ export function AnalyticsTab({ courseId, courseSlug }: AnalyticsTabProps) {
           <Skeleton className="h-24" />
         </div>
         <Skeleton className="h-64" />
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Skeleton className="h-24" />
+          <Skeleton className="h-24" />
+        </div>
+        <Skeleton className="h-64" />
       </div>
     );
   }
@@ -85,10 +100,25 @@ export function AnalyticsTab({ courseId, courseSlug }: AnalyticsTabProps) {
     );
   }
 
-  const { totalEnrollments, totalRevenue, timeline, completionRate, dropOff } =
-    result;
+  const {
+    totalEnrollments,
+    totalRevenue,
+    timeline,
+    completionRate,
+    dropOff,
+    lessonCompletion,
+  } = result;
 
   const hasLessonProgress = dropOff.some((point) => point.startedCount > 0);
+
+  const totalLessons = lessonCompletion.length;
+  const avgLessonCompletion =
+    totalLessons === 0
+      ? 0
+      : Math.round(
+          lessonCompletion.reduce((sum, lesson) => sum + lesson.rate, 0) /
+            totalLessons
+        );
 
   if (totalEnrollments === 0 && totalRevenue === 0) {
     return (
@@ -183,6 +213,45 @@ export function AnalyticsTab({ courseId, courseSlug }: AnalyticsTabProps) {
               <p className="max-w-sm text-sm text-muted-foreground">
                 Once students start lessons, you'll see how far they get and where
                 they drop off.
+              </p>
+            </CardContent>
+          </Card>
+        )}
+      </section>
+
+      <section id="analytics-content" className="scroll-mt-12 pt-6">
+        <h2 className="text-lg font-semibold">Content</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          How students complete each lesson, worst first.
+        </p>
+
+        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+          <StatCard
+            icon={BookOpen}
+            value={String(totalLessons)}
+            label="Total lessons"
+            tone="blue"
+          />
+          <StatCard
+            icon={CheckCircle2}
+            value={`${avgLessonCompletion}%`}
+            label="Avg lesson completion"
+            tone="green"
+          />
+        </div>
+
+        {totalLessons > 0 ? (
+          <Card className="mt-4">
+            <CardContent className="p-5">
+              <LessonCompletionChart data={lessonCompletion} />
+            </CardContent>
+          </Card>
+        ) : (
+          <Card className="mt-4">
+            <CardContent className="flex flex-col items-center justify-center gap-2 p-10 text-center">
+              <p className="text-sm font-medium">No lessons yet</p>
+              <p className="max-w-sm text-sm text-muted-foreground">
+                Add lessons in the Content tab to track lesson completion here.
               </p>
             </CardContent>
           </Card>
