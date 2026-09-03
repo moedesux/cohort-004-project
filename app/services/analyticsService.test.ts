@@ -16,6 +16,7 @@ import {
   getCourseAnalytics,
   getInstructorAnalyticsSummary,
   getEnrollmentTimeline,
+  getLessonDropOffRates,
 } from "./analyticsService";
 
 describe("analyticsService", () => {
@@ -93,6 +94,35 @@ describe("analyticsService", () => {
     return testDb
       .insert(schema.courseRatings)
       .values({ userId, courseId, rating })
+      .returning()
+      .get();
+  }
+
+  function createModule(courseId: number, title: string, position: number) {
+    return testDb
+      .insert(schema.modules)
+      .values({ courseId, title, position })
+      .returning()
+      .get();
+  }
+
+  function createLesson(moduleId: number, title: string, position: number) {
+    return testDb
+      .insert(schema.lessons)
+      .values({ moduleId, title, position })
+      .returning()
+      .get();
+  }
+
+  function seedLessonProgress(
+    userId: number,
+    lessonId: number,
+    status: schema.LessonProgressStatus,
+    completedAt?: string | null
+  ) {
+    return testDb
+      .insert(schema.lessonProgress)
+      .values({ userId, lessonId, status, completedAt })
       .returning()
       .get();
   }
@@ -518,6 +548,176 @@ describe("analyticsService", () => {
       });
       expect(timeline.reduce((sum, point) => sum + point.enrollments, 0)).toBe(1);
       expect(timeline.reduce((sum, point) => sum + point.revenue, 0)).toBe(12345);
+    });
+  });
+
+  // ─── getLessonDropOffRates ───
+
+  describe("getLessonDropOffRates", () => {
+    it("returns [] for a course with no modules or lessons", () => {
+      expect(getLessonDropOffRates(base.course.id)).toEqual([]);
+    });
+
+    it("returns [] when the course has modules but no lessons", () => {
+      createModule(base.course.id, "Module One", 1);
+
+      expect(getLessonDropOffRates(base.course.id)).toEqual([]);
+    });
+
+    it("returns one entry per lesson in course order even when rows were inserted out of sequence", () => {
+      const module2 = createModule(base.course.id, "Module Two", 2);
+      const module1 = createModule(base.course.id, "Module One", 1);
+
+      // Deliberately scrambled: the later module (2) created first, its
+      // lesson inserted first, and lesson positions out of sequence
+      // within each module.
+      const c = createLesson(module2.id, "C", 2);
+      const b = createLesson(module1.id, "B", 2);
+      const a = createLesson(module1.id, "A", 1);
+      const d = createLesson(module2.id, "D", 1);
+
+      seedLessonProgress(base.user.id, a.id, schema.LessonProgressStatus.InProgress);
+      seedLessonProgress(base.user.id, d.id, schema.LessonProgressStatus.Completed, "2026-01-01T00:00:00.000Z");
+
+      // Course order: module 1 (A, B) then module 2 (D, C).
+      expect(getLessonDropOffRates(base.course.id)).toEqual([
+        { lessonId: a.id, title: "A", startedCount: 1, rate: 100 },
+        { lessonId: b.id, title: "B", startedCount: 0, rate: 0 },
+        { lessonId: d.id, title: "D", startedCount: 1, rate: 100 },
+        { lessonId: c.id, title: "C", startedCount: 0, rate: 0 },
+      ]);
+    });
+
+    it("counts both in_progress and completed records as started", () => {
+      const student2 = createStudent("Student Two", "student2@example.com");
+      const module = createModule(base.course.id, "Module One", 1);
+      const lesson = createLesson(module.id, "Lesson One", 1);
+
+      seedLessonProgress(base.user.id, lesson.id, schema.LessonProgressStatus.InProgress);
+      seedLessonProgress(
+        student2.id,
+        lesson.id,
+        schema.LessonProgressStatus.Completed,
+        "2026-01-01T00:00:00.000Z"
+      );
+
+      expect(getLessonDropOffRates(base.course.id)).toEqual([
+        { lessonId: lesson.id, title: "Lesson One", startedCount: 2, rate: 100 },
+      ]);
+    });
+
+    it("excludes not_started records from the started count", () => {
+      const module = createModule(base.course.id, "Module One", 1);
+      const lesson = createLesson(module.id, "Lesson One", 1);
+
+      seedLessonProgress(base.user.id, lesson.id, schema.LessonProgressStatus.NotStarted);
+
+      expect(getLessonDropOffRates(base.course.id)).toEqual([
+        { lessonId: lesson.id, title: "Lesson One", startedCount: 0, rate: 0 },
+      ]);
+    });
+
+    it("gives lessons with no progress rows a startedCount of 0", () => {
+      const module = createModule(base.course.id, "Module One", 1);
+      const startedLesson = createLesson(module.id, "Started", 1);
+      const untouchedLesson = createLesson(module.id, "Untouched", 2);
+
+      seedLessonProgress(base.user.id, startedLesson.id, schema.LessonProgressStatus.InProgress);
+
+      expect(getLessonDropOffRates(base.course.id)).toEqual([
+        { lessonId: startedLesson.id, title: "Started", startedCount: 1, rate: 100 },
+        { lessonId: untouchedLesson.id, title: "Untouched", startedCount: 0, rate: 0 },
+      ]);
+    });
+
+    it("computes rates relative to the widest lesson (100/50/25)", () => {
+      const student2 = createStudent("Student Two", "student2@example.com");
+      const student3 = createStudent("Student Three", "student3@example.com");
+      const student4 = createStudent("Student Four", "student4@example.com");
+
+      const module = createModule(base.course.id, "Module One", 1);
+      const lesson1 = createLesson(module.id, "Lesson One", 1);
+      const lesson2 = createLesson(module.id, "Lesson Two", 2);
+      const lesson3 = createLesson(module.id, "Lesson Three", 3);
+
+      // Lesson 1: 4 started (widest), lesson 2: 2, lesson 3: 1.
+      seedLessonProgress(base.user.id, lesson1.id, schema.LessonProgressStatus.Completed, "2026-01-01T00:00:00.000Z");
+      seedLessonProgress(student2.id, lesson1.id, schema.LessonProgressStatus.Completed, "2026-01-02T00:00:00.000Z");
+      seedLessonProgress(student3.id, lesson1.id, schema.LessonProgressStatus.Completed, "2026-01-03T00:00:00.000Z");
+      seedLessonProgress(student4.id, lesson1.id, schema.LessonProgressStatus.InProgress);
+      seedLessonProgress(base.user.id, lesson2.id, schema.LessonProgressStatus.Completed, "2026-01-01T00:00:00.000Z");
+      seedLessonProgress(student2.id, lesson2.id, schema.LessonProgressStatus.InProgress);
+      seedLessonProgress(base.user.id, lesson3.id, schema.LessonProgressStatus.InProgress);
+
+      expect(getLessonDropOffRates(base.course.id)).toEqual([
+        { lessonId: lesson1.id, title: "Lesson One", startedCount: 4, rate: 100 },
+        { lessonId: lesson2.id, title: "Lesson Two", startedCount: 2, rate: 50 },
+        { lessonId: lesson3.id, title: "Lesson Three", startedCount: 1, rate: 25 },
+      ]);
+    });
+
+    it("rounds rates with Math.round (1 of 3 starts → 33)", () => {
+      const student2 = createStudent("Student Two", "student2@example.com");
+      const student3 = createStudent("Student Three", "student3@example.com");
+
+      const module = createModule(base.course.id, "Module One", 1);
+      const lesson1 = createLesson(module.id, "Lesson One", 1);
+      const lesson2 = createLesson(module.id, "Lesson Two", 2);
+
+      seedLessonProgress(base.user.id, lesson1.id, schema.LessonProgressStatus.InProgress);
+      seedLessonProgress(student2.id, lesson1.id, schema.LessonProgressStatus.InProgress);
+      seedLessonProgress(student3.id, lesson1.id, schema.LessonProgressStatus.InProgress);
+      seedLessonProgress(base.user.id, lesson2.id, schema.LessonProgressStatus.InProgress);
+
+      expect(getLessonDropOffRates(base.course.id)).toEqual([
+        { lessonId: lesson1.id, title: "Lesson One", startedCount: 3, rate: 100 },
+        { lessonId: lesson2.id, title: "Lesson Two", startedCount: 1, rate: 33 },
+      ]);
+    });
+
+    it("counts each student once even with duplicate progress rows", () => {
+      const module = createModule(base.course.id, "Module One", 1);
+      const lesson = createLesson(module.id, "Lesson One", 1);
+
+      seedLessonProgress(base.user.id, lesson.id, schema.LessonProgressStatus.InProgress);
+      seedLessonProgress(base.user.id, lesson.id, schema.LessonProgressStatus.InProgress);
+      seedLessonProgress(base.user.id, lesson.id, schema.LessonProgressStatus.Completed, "2026-01-01T00:00:00.000Z");
+
+      expect(getLessonDropOffRates(base.course.id)).toEqual([
+        { lessonId: lesson.id, title: "Lesson One", startedCount: 1, rate: 100 },
+      ]);
+    });
+
+    it("reports rate 0 for every lesson when nobody started anything", () => {
+      const module = createModule(base.course.id, "Module One", 1);
+      const lesson1 = createLesson(module.id, "Lesson One", 1);
+      const lesson2 = createLesson(module.id, "Lesson Two", 2);
+
+      expect(getLessonDropOffRates(base.course.id)).toEqual([
+        { lessonId: lesson1.id, title: "Lesson One", startedCount: 0, rate: 0 },
+        { lessonId: lesson2.id, title: "Lesson Two", startedCount: 0, rate: 0 },
+      ]);
+    });
+
+    it("does not include lessons from other courses", () => {
+      const otherCourse = createCourse("Other Course", "other-course");
+      const otherModule = createModule(otherCourse.id, "Other Module", 1);
+      const otherLesson = createLesson(otherModule.id, "Other Lesson", 1);
+
+      const module = createModule(base.course.id, "Module One", 1);
+      const lesson = createLesson(module.id, "Lesson One", 1);
+
+      seedLessonProgress(base.user.id, lesson.id, schema.LessonProgressStatus.InProgress);
+      seedLessonProgress(
+        base.user.id,
+        otherLesson.id,
+        schema.LessonProgressStatus.Completed,
+        "2026-01-01T00:00:00.000Z"
+      );
+
+      expect(getLessonDropOffRates(base.course.id)).toEqual([
+        { lessonId: lesson.id, title: "Lesson One", startedCount: 1, rate: 100 },
+      ]);
     });
   });
 });

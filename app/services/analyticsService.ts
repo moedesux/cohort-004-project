@@ -1,11 +1,15 @@
-import { eq, and, gte, lte, isNotNull, sql } from "drizzle-orm";
+import { eq, and, gte, lte, isNotNull, inArray, sql } from "drizzle-orm";
 import { db } from "~/db";
 import {
   courses,
   enrollments,
   purchases,
   courseRatings,
+  modules,
+  lessons,
+  lessonProgress,
   CourseStatus,
+  LessonProgressStatus,
 } from "~/db/schema";
 
 // ─── Analytics Service ───
@@ -44,6 +48,13 @@ export interface EnrollmentTimelinePoint {
   date: string; // bucket start, UTC date "YYYY-MM-DD"
   enrollments: number;
   revenue: number; // cents
+}
+
+export interface LessonDropOffPoint {
+  lessonId: number;
+  title: string;
+  startedCount: number; // students with an in_progress or completed record for this lesson
+  rate: number; // 0-100, startedCount as a % of the course's widest lesson, Math.round
 }
 
 /**
@@ -331,4 +342,96 @@ export function getEnrollmentTimeline(
     enrollments: totals.enrollments,
     revenue: totals.revenue,
   }));
+}
+
+/**
+ * Builds the lesson drop-off funnel for a single course: one entry per
+ * lesson, in course order (modules by `position` ASC, then lessons by
+ * `position` ASC within each module).
+ *
+ * A student "starts" a lesson when they have a `lesson_progress` row with
+ * status `in_progress` or `completed`; `not_started` rows and students with
+ * no row do not count. `startedCount` counts distinct students, so duplicate
+ * rows for one user cannot inflate it.
+ *
+ * `rate` expresses each lesson's `startedCount` as a percentage of the
+ * course's widest lesson (the max startedCount across the course), rounded
+ * with `Math.round`. When no student has started anything, every `rate` is
+ * 0. Returns `[]` for a course with no modules or no lessons.
+ */
+export function getLessonDropOffRates(courseId: number): LessonDropOffPoint[] {
+  const courseModules = db
+    .select({ id: modules.id })
+    .from(modules)
+    .where(eq(modules.courseId, courseId))
+    .orderBy(modules.position)
+    .all();
+
+  if (courseModules.length === 0) return [];
+
+  const courseLessons = db
+    .select({
+      id: lessons.id,
+      title: lessons.title,
+      moduleId: lessons.moduleId,
+      position: lessons.position,
+    })
+    .from(lessons)
+    .where(inArray(lessons.moduleId, courseModules.map((m) => m.id)))
+    .all();
+
+  if (courseLessons.length === 0) return [];
+
+  // Modules are already sorted by position, so a module's index in that list
+  // is its rank — lessons sort by (module rank, lesson position), which is
+  // the order a student walks the course.
+  const moduleRank = new Map(courseModules.map((m, index) => [m.id, index]));
+  const orderedLessons = [...courseLessons].sort(
+    (a, b) =>
+      moduleRank.get(a.moduleId)! - moduleRank.get(b.moduleId)! ||
+      a.position - b.position
+  );
+
+  const startedRows = db
+    .select({
+      lessonId: lessonProgress.lessonId,
+      startedCount: sql<number>`count(distinct ${lessonProgress.userId})`,
+    })
+    .from(lessonProgress)
+    .where(
+      and(
+        inArray(
+          lessonProgress.lessonId,
+          courseLessons.map((l) => l.id)
+        ),
+        inArray(lessonProgress.status, [
+          LessonProgressStatus.InProgress,
+          LessonProgressStatus.Completed,
+        ])
+      )
+    )
+    .groupBy(lessonProgress.lessonId)
+    .all();
+
+  const startedByLesson = new Map(
+    startedRows.map((row) => [row.lessonId, row.startedCount])
+  );
+
+  const maxStartedCount = Math.max(
+    0,
+    ...orderedLessons.map((lesson) => startedByLesson.get(lesson.id) ?? 0)
+  );
+
+  return orderedLessons.map((lesson) => {
+    const startedCount = startedByLesson.get(lesson.id) ?? 0;
+    return {
+      lessonId: lesson.id,
+      title: lesson.title,
+      startedCount,
+      rate:
+        maxStartedCount === 0
+          ? 0
+          : Math.round((startedCount / maxStartedCount) * 100),
+    };
+  });
 }

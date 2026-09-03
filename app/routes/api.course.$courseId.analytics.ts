@@ -3,7 +3,11 @@ import type { Route } from "./+types/api.course.$courseId.analytics";
 import { getCurrentUserId } from "~/lib/session";
 import { getUserById } from "~/services/userService";
 import { getCourseWithDetails } from "~/services/courseService";
-import { getCourseAnalytics, getEnrollmentTimeline } from "~/services/analyticsService";
+import {
+  getCourseAnalytics,
+  getEnrollmentTimeline,
+  getLessonDropOffRates,
+} from "~/services/analyticsService";
 import { UserRole } from "~/db/schema";
 
 // This route is consumed in-page via `fetcher.load`, so failures are
@@ -46,6 +50,8 @@ export async function loader({ request, params }: Route.LoaderArgs) {
   return Response.json({
     totalEnrollments: analytics.enrollments,
     totalRevenue: analytics.revenue,
+    completionRate: analytics.avgCompletionRate,
     timeline: getEnrollmentTimeline(courseId),
+    dropOff: getLessonDropOffRates(courseId),
   });
 }

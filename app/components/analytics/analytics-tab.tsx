@@ -1,10 +1,14 @@
 import { useEffect } from "react";
 import { Link, useFetcher } from "react-router";
-import { DollarSign, Users } from "lucide-react";
-import type { EnrollmentTimelinePoint } from "~/services/analyticsService";
+import { DollarSign, PlayCircle, TrendingUp, Users } from "lucide-react";
+import type {
+  EnrollmentTimelinePoint,
+  LessonDropOffPoint,
+} from "~/services/analyticsService";
 import { formatCurrency } from "~/lib/utils";
 import { StatCard } from "~/components/analytics/stat-card";
 import { RevenueTimelineChart } from "~/components/analytics/revenue-timeline-chart";
+import { DropOffFunnelChart } from "~/components/analytics/drop-off-funnel-chart";
 import { Skeleton } from "~/components/ui/skeleton";
 import { Button } from "~/components/ui/button";
 import { Card, CardContent } from "~/components/ui/card";
@@ -13,6 +17,8 @@ interface AnalyticsTabData {
   totalEnrollments: number;
   totalRevenue: number;
   timeline: EnrollmentTimelinePoint[];
+  completionRate: number; // 0-100, rounded
+  dropOff: LessonDropOffPoint[];
 }
 
 // The resource route responds to failures with 4xx JSON bodies (plain
@@ -25,10 +31,11 @@ function isAnalyticsData(result: AnalyticsTabResult): result is AnalyticsTabData
   return typeof result === "object" && result !== null;
 }
 
-// Section anchors for the sticky nav. Future sections (Engagement, Content)
-// are appended here.
+// Section anchors for the sticky nav. Future sections (Content) are appended
+// here.
 const sections: Array<{ id: string; label: string }> = [
   { id: "analytics-sales", label: "Sales" },
+  { id: "analytics-engagement", label: "Engagement" },
 ];
 
 interface AnalyticsTabProps {
@@ -55,6 +62,11 @@ export function AnalyticsTab({ courseId, courseSlug }: AnalyticsTabProps) {
           <Skeleton className="h-24" />
         </div>
         <Skeleton className="h-80" />
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Skeleton className="h-24" />
+          <Skeleton className="h-24" />
+        </div>
+        <Skeleton className="h-64" />
       </div>
     );
   }
@@ -73,7 +85,10 @@ export function AnalyticsTab({ courseId, courseSlug }: AnalyticsTabProps) {
     );
   }
 
-  const { totalEnrollments, totalRevenue, timeline } = result;
+  const { totalEnrollments, totalRevenue, timeline, completionRate, dropOff } =
+    result;
+
+  const hasLessonProgress = dropOff.some((point) => point.startedCount > 0);
 
   if (totalEnrollments === 0 && totalRevenue === 0) {
     return (
@@ -132,6 +147,46 @@ export function AnalyticsTab({ courseId, courseSlug }: AnalyticsTabProps) {
             <RevenueTimelineChart data={timeline} />
           </CardContent>
         </Card>
+      </section>
+
+      <section id="analytics-engagement" className="scroll-mt-12 pt-6">
+        <h2 className="text-lg font-semibold">Engagement</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          How students move through the course, lesson by lesson.
+        </p>
+
+        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+          <StatCard
+            icon={PlayCircle}
+            value={String(dropOff[0]?.startedCount ?? 0)}
+            label="First-lesson starters"
+            tone="purple"
+          />
+          <StatCard
+            icon={TrendingUp}
+            value={`${completionRate}%`}
+            label="Overall completion rate"
+            tone="amber"
+          />
+        </div>
+
+        {hasLessonProgress ? (
+          <Card className="mt-4">
+            <CardContent className="p-5">
+              <DropOffFunnelChart data={dropOff} />
+            </CardContent>
+          </Card>
+        ) : (
+          <Card className="mt-4">
+            <CardContent className="flex flex-col items-center justify-center gap-2 p-10 text-center">
+              <p className="text-sm font-medium">No lesson progress yet</p>
+              <p className="max-w-sm text-sm text-muted-foreground">
+                Once students start lessons, you'll see how far they get and where
+                they drop off.
+              </p>
+            </CardContent>
+          </Card>
+        )}
       </section>
     </div>
   );
