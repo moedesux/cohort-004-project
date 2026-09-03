@@ -40,6 +40,12 @@ export interface InstructorAnalyticsSummary {
   courseDetails: CourseDetail[]; // ordered by course id ASC (insertion order, matches current UI)
 }
 
+export interface EnrollmentTimelinePoint {
+  date: string; // bucket start, UTC date "YYYY-MM-DD"
+  enrollments: number;
+  revenue: number; // cents
+}
+
 /**
  * Computes the analytics metrics for a single course, optionally restricted
  * to an inclusive ISO date window:
@@ -205,4 +211,124 @@ export function getInstructorAnalyticsSummary(
     publishedCourses,
     courseDetails,
   };
+}
+
+const MS_PER_DAY = 86400000;
+
+// Date-only bounds ("YYYY-MM-DD") become full instants so the end day is
+// truly inclusive — a raw `lte` on a date-only string would cut off at
+// midnight instead of covering the whole day. Full ISO bounds pass through.
+function startInstantOf(startDate?: string): string | undefined {
+  if (!startDate) return undefined;
+  return startDate.length === 10 ? `${startDate}T00:00:00.000Z` : startDate;
+}
+
+function endInstantOf(endDate?: string): string | undefined {
+  if (!endDate) return undefined;
+  return endDate.length === 10 ? `${endDate}T23:59:59.999Z` : endDate;
+}
+
+/**
+ * Builds a contiguous enrollment/revenue timeline for a single course, one
+ * point per bucket, zero-filled:
+ *
+ * - Optional inclusive date window; date-only bounds are normalized to full
+ *   instants before filtering (start → midnight, end → end of day).
+ * - Window defaults to the first record through today (UTC).
+ * - Granularity: daily buckets when the span is at most 62 days, otherwise
+ *   one bucket per calendar month (bucket date = first of month).
+ */
+export function getEnrollmentTimeline(
+  courseId: number,
+  startDate?: string,
+  endDate?: string
+): EnrollmentTimelinePoint[] {
+  const startInstant = startInstantOf(startDate);
+  const endInstant = endInstantOf(endDate);
+
+  const enrollmentRows = db
+    .select({ date: enrollments.enrolledAt })
+    .from(enrollments)
+    .where(
+      and(
+        eq(enrollments.courseId, courseId),
+        startInstant ? gte(enrollments.enrolledAt, startInstant) : undefined,
+        endInstant ? lte(enrollments.enrolledAt, endInstant) : undefined
+      )
+    )
+    .all();
+
+  const purchaseRows = db
+    .select({ date: purchases.createdAt, revenue: purchases.pricePaid })
+    .from(purchases)
+    .where(
+      and(
+        eq(purchases.courseId, courseId),
+        startInstant ? gte(purchases.createdAt, startInstant) : undefined,
+        endInstant ? lte(purchases.createdAt, endInstant) : undefined
+      )
+    )
+    .all();
+
+  if (enrollmentRows.length === 0 && purchaseRows.length === 0) {
+    return [];
+  }
+
+  const recordDates = [...enrollmentRows, ...purchaseRows].map((row) => row.date);
+  const start = startDate
+    ? startDate.slice(0, 10)
+    : recordDates.reduce((min, date) => (date < min ? date : min)).slice(0, 10);
+  const end = endDate ? endDate.slice(0, 10) : new Date().toISOString().slice(0, 10);
+
+  if (start > end) {
+    return [];
+  }
+
+  const spanDays = (Date.parse(end) - Date.parse(start)) / MS_PER_DAY;
+  const monthly = spanDays > 62;
+
+  const buckets = new Map<string, { enrollments: number; revenue: number }>();
+
+  if (monthly) {
+    let year = Number(start.slice(0, 4));
+    let month = Number(start.slice(5, 7));
+    const endYear = Number(end.slice(0, 4));
+    const endMonth = Number(end.slice(5, 7));
+    while (year < endYear || (year === endYear && month <= endMonth)) {
+      buckets.set(`${year}-${String(month).padStart(2, "0")}-01`, {
+        enrollments: 0,
+        revenue: 0,
+      });
+      month += 1;
+      if (month === 13) {
+        month = 1;
+        year += 1;
+      }
+    }
+  } else {
+    for (let ms = Date.parse(start); ms <= Date.parse(end); ms += MS_PER_DAY) {
+      buckets.set(new Date(ms).toISOString().slice(0, 10), {
+        enrollments: 0,
+        revenue: 0,
+      });
+    }
+  }
+
+  const bucketDate = (isoDate: string) =>
+    monthly ? isoDate.slice(0, 7) + "-01" : isoDate.slice(0, 10);
+
+  for (const row of enrollmentRows) {
+    const bucket = buckets.get(bucketDate(row.date));
+    if (bucket) bucket.enrollments += 1;
+  }
+  for (const row of purchaseRows) {
+    const bucket = buckets.get(bucketDate(row.date));
+    if (bucket) bucket.revenue += row.revenue;
+  }
+
+  return [...buckets.entries()].map(([date, totals]) => ({
+    date,
+    enrollments: totals.enrollments,
+    revenue: totals.revenue,
+  }));
 }

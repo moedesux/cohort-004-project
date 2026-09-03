@@ -15,6 +15,7 @@ vi.mock("~/db", () => ({
 import {
   getCourseAnalytics,
   getInstructorAnalyticsSummary,
+  getEnrollmentTimeline,
 } from "./analyticsService";
 
 describe("analyticsService", () => {
@@ -400,6 +401,123 @@ describe("analyticsService", () => {
           rating: null,
         },
       ]);
+    });
+  });
+
+  // ─── getEnrollmentTimeline ───
+
+  describe("getEnrollmentTimeline", () => {
+    it("returns [] for a course with no enrollments or purchases", () => {
+      expect(getEnrollmentTimeline(base.course.id)).toEqual([]);
+    });
+
+    it("returns [] when the explicit window excludes all records", () => {
+      seedEnrollment(base.user.id, base.course.id, "2026-03-10T09:00:00.000Z");
+      seedPurchase(base.user.id, base.course.id, 2500, "2026-03-11T09:00:00.000Z");
+
+      expect(
+        getEnrollmentTimeline(base.course.id, "2026-01-01", "2026-01-31")
+      ).toEqual([]);
+    });
+
+    it("buckets daily with contiguous zero-filled buckets", () => {
+      const student2 = createStudent("Student Two", "student2@example.com");
+      const student3 = createStudent("Student Three", "student3@example.com");
+
+      seedEnrollment(base.user.id, base.course.id, "2026-03-01T08:00:00.000Z");
+      seedEnrollment(student2.id, base.course.id, "2026-03-01T15:30:00.000Z");
+      seedPurchase(base.user.id, base.course.id, 2500, "2026-03-01T10:00:00.000Z");
+      seedPurchase(student2.id, base.course.id, 5000, "2026-03-02T10:00:00.000Z");
+      seedEnrollment(student3.id, base.course.id, "2026-03-03T23:00:00.000Z");
+
+      expect(getEnrollmentTimeline(base.course.id, "2026-03-01", "2026-03-03")).toEqual([
+        { date: "2026-03-01", enrollments: 2, revenue: 2500 },
+        { date: "2026-03-02", enrollments: 0, revenue: 5000 },
+        { date: "2026-03-03", enrollments: 1, revenue: 0 },
+      ]);
+    });
+
+    it("treats a date-only end bound as inclusive of the whole end day", () => {
+      seedPurchase(base.user.id, base.course.id, 1500, "2026-03-03T12:00:00.000Z");
+
+      expect(getEnrollmentTimeline(base.course.id, "2026-03-01", "2026-03-03")).toEqual([
+        { date: "2026-03-01", enrollments: 0, revenue: 0 },
+        { date: "2026-03-02", enrollments: 0, revenue: 0 },
+        { date: "2026-03-03", enrollments: 0, revenue: 1500 },
+      ]);
+    });
+
+    it("buckets monthly with zero-filled months for long windows", () => {
+      const student2 = createStudent("Student Two", "student2@example.com");
+      const student3 = createStudent("Student Three", "student3@example.com");
+
+      seedEnrollment(base.user.id, base.course.id, "2026-01-15T09:00:00.000Z");
+      seedEnrollment(student2.id, base.course.id, "2026-04-10T09:00:00.000Z");
+      seedEnrollment(student3.id, base.course.id, "2026-06-21T09:00:00.000Z");
+      seedPurchase(student3.id, base.course.id, 10000, "2026-06-20T09:00:00.000Z");
+
+      expect(getEnrollmentTimeline(base.course.id, "2026-01-01", "2026-06-30")).toEqual([
+        { date: "2026-01-01", enrollments: 1, revenue: 0 },
+        { date: "2026-02-01", enrollments: 0, revenue: 0 },
+        { date: "2026-03-01", enrollments: 0, revenue: 0 },
+        { date: "2026-04-01", enrollments: 1, revenue: 0 },
+        { date: "2026-05-01", enrollments: 0, revenue: 0 },
+        { date: "2026-06-01", enrollments: 1, revenue: 10000 },
+      ]);
+    });
+
+    it("stays daily up to spanDays of 62 and switches to monthly beyond", () => {
+      const student2 = createStudent("Student Two", "student2@example.com");
+
+      seedEnrollment(base.user.id, base.course.id, "2026-01-02T09:00:00.000Z");
+      seedPurchase(student2.id, base.course.id, 1000, "2026-03-01T09:00:00.000Z");
+
+      // spanDays = 62 (2026-01-01..2026-03-04) → daily: 63 contiguous day buckets
+      const daily = getEnrollmentTimeline(base.course.id, "2026-01-01", "2026-03-04");
+      expect(daily).toHaveLength(63);
+      expect(daily[0]).toEqual({ date: "2026-01-01", enrollments: 0, revenue: 0 });
+      expect(daily[62]).toEqual({ date: "2026-03-04", enrollments: 0, revenue: 0 });
+      expect(daily.find((point) => point.date === "2026-01-02")).toEqual({
+        date: "2026-01-02",
+        enrollments: 1,
+        revenue: 0,
+      });
+      expect(daily.find((point) => point.date === "2026-03-01")).toEqual({
+        date: "2026-03-01",
+        enrollments: 0,
+        revenue: 1000,
+      });
+
+      // spanDays = 63 (2026-01-01..2026-03-05) → monthly: one bucket per month
+      expect(getEnrollmentTimeline(base.course.id, "2026-01-01", "2026-03-05")).toEqual([
+        { date: "2026-01-01", enrollments: 1, revenue: 0 },
+        { date: "2026-02-01", enrollments: 0, revenue: 0 },
+        { date: "2026-03-01", enrollments: 0, revenue: 1000 },
+      ]);
+    });
+
+    it("defaults to the first record through today (monthly) when no window is given", () => {
+      seedEnrollment(base.user.id, base.course.id, "2026-01-10T09:00:00.000Z");
+      seedPurchase(base.user.id, base.course.id, 12345, "2026-05-20T09:00:00.000Z");
+
+      const firstOfCurrentMonth = new Date().toISOString().slice(0, 7) + "-01";
+      const timeline = getEnrollmentTimeline(base.course.id);
+
+      expect(timeline[0].date).toBe("2026-01-01");
+      expect(timeline[timeline.length - 1].date).toBe(firstOfCurrentMonth);
+      expect(timeline.every((point) => point.date.endsWith("-01"))).toBe(true);
+      expect(timeline.find((point) => point.date === "2026-01-01")).toEqual({
+        date: "2026-01-01",
+        enrollments: 1,
+        revenue: 0,
+      });
+      expect(timeline.find((point) => point.date === "2026-05-01")).toEqual({
+        date: "2026-05-01",
+        enrollments: 0,
+        revenue: 12345,
+      });
+      expect(timeline.reduce((sum, point) => sum + point.enrollments, 0)).toBe(1);
+      expect(timeline.reduce((sum, point) => sum + point.revenue, 0)).toBe(12345);
     });
   });
 });
