@@ -17,6 +17,7 @@ import {
   getInstructorAnalyticsSummary,
   getEnrollmentTimeline,
   getLessonDropOffRates,
+  getLessonCompletionRates,
 } from "./analyticsService";
 
 describe("analyticsService", () => {
@@ -717,6 +718,399 @@ describe("analyticsService", () => {
 
       expect(getLessonDropOffRates(base.course.id)).toEqual([
         { lessonId: lesson.id, title: "Lesson One", startedCount: 1, rate: 100 },
+      ]);
+    });
+  });
+
+  // ─── getLessonCompletionRates ───
+
+  describe("getLessonCompletionRates", () => {
+    it("returns [] for a course with no modules or lessons", () => {
+      expect(getLessonCompletionRates(base.course.id)).toEqual([]);
+    });
+
+    it("returns [] when the course has modules but no lessons", () => {
+      createModule(base.course.id, "Module One", 1);
+
+      expect(getLessonCompletionRates(base.course.id)).toEqual([]);
+    });
+
+    it("returns one entry per lesson in course order when nothing has been started", () => {
+      const module2 = createModule(base.course.id, "Module Two", 2);
+      const module1 = createModule(base.course.id, "Module One", 1);
+
+      // Deliberately scrambled: the later module (2) created first, so this
+      // also pins the all-rates-0 tie-break to course order, not insertion.
+      const c = createLesson(module2.id, "C", 1);
+      const a = createLesson(module1.id, "A", 1);
+
+      expect(getLessonCompletionRates(base.course.id)).toEqual([
+        {
+          lessonId: a.id,
+          title: "A",
+          startedCount: 0,
+          completedCount: 0,
+          rate: 0,
+        },
+        {
+          lessonId: c.id,
+          title: "C",
+          startedCount: 0,
+          completedCount: 0,
+          rate: 0,
+        },
+      ]);
+    });
+
+    it("counts in_progress toward started only and completed toward both", () => {
+      const student2 = createStudent("Student Two", "student2@example.com");
+      const module = createModule(base.course.id, "Module One", 1);
+      const lesson = createLesson(module.id, "Lesson One", 1);
+
+      seedLessonProgress(
+        base.user.id,
+        lesson.id,
+        schema.LessonProgressStatus.InProgress
+      );
+      seedLessonProgress(
+        student2.id,
+        lesson.id,
+        schema.LessonProgressStatus.Completed,
+        "2026-01-01T00:00:00.000Z"
+      );
+
+      expect(getLessonCompletionRates(base.course.id)).toEqual([
+        {
+          lessonId: lesson.id,
+          title: "Lesson One",
+          startedCount: 2,
+          completedCount: 1,
+          rate: 50,
+        },
+      ]);
+    });
+
+    it("counts each student once even with duplicate progress rows", () => {
+      const student2 = createStudent("Student Two", "student2@example.com");
+      const module = createModule(base.course.id, "Module One", 1);
+      const lesson = createLesson(module.id, "Lesson One", 1);
+
+      seedLessonProgress(
+        base.user.id,
+        lesson.id,
+        schema.LessonProgressStatus.InProgress
+      );
+      seedLessonProgress(
+        base.user.id,
+        lesson.id,
+        schema.LessonProgressStatus.InProgress
+      );
+      seedLessonProgress(
+        base.user.id,
+        lesson.id,
+        schema.LessonProgressStatus.Completed,
+        "2026-01-01T00:00:00.000Z"
+      );
+      seedLessonProgress(
+        student2.id,
+        lesson.id,
+        schema.LessonProgressStatus.InProgress
+      );
+
+      // base.user counts once (started 1, completed 1) plus student2's
+      // single in_progress row: 2 started, 1 completed.
+      expect(getLessonCompletionRates(base.course.id)).toEqual([
+        {
+          lessonId: lesson.id,
+          title: "Lesson One",
+          startedCount: 2,
+          completedCount: 1,
+          rate: 50,
+        },
+      ]);
+    });
+
+    it("excludes not_started records from the started count", () => {
+      const module = createModule(base.course.id, "Module One", 1);
+      const lesson = createLesson(module.id, "Lesson One", 1);
+
+      seedLessonProgress(
+        base.user.id,
+        lesson.id,
+        schema.LessonProgressStatus.NotStarted
+      );
+
+      expect(getLessonCompletionRates(base.course.id)).toEqual([
+        {
+          lessonId: lesson.id,
+          title: "Lesson One",
+          startedCount: 0,
+          completedCount: 0,
+          rate: 0,
+        },
+      ]);
+    });
+
+    it("gives lessons with no progress rows zeros", () => {
+      const module = createModule(base.course.id, "Module One", 1);
+      const startedLesson = createLesson(module.id, "Started", 1);
+      const untouchedLesson = createLesson(module.id, "Untouched", 2);
+
+      seedLessonProgress(
+        base.user.id,
+        startedLesson.id,
+        schema.LessonProgressStatus.InProgress
+      );
+
+      expect(getLessonCompletionRates(base.course.id)).toEqual([
+        {
+          lessonId: startedLesson.id,
+          title: "Started",
+          startedCount: 1,
+          completedCount: 0,
+          rate: 0,
+        },
+        {
+          lessonId: untouchedLesson.id,
+          title: "Untouched",
+          startedCount: 0,
+          completedCount: 0,
+          rate: 0,
+        },
+      ]);
+    });
+
+    it("rounds rates with Math.round (1 of 3 → 33, 2 of 3 → 67)", () => {
+      const student2 = createStudent("Student Two", "student2@example.com");
+      const student3 = createStudent("Student Three", "student3@example.com");
+
+      const module = createModule(base.course.id, "Module One", 1);
+      const lesson1 = createLesson(module.id, "Lesson One", 1);
+      const lesson2 = createLesson(module.id, "Lesson Two", 2);
+
+      // Lesson One: 3 started, 1 completed → 33.
+      seedLessonProgress(
+        base.user.id,
+        lesson1.id,
+        schema.LessonProgressStatus.Completed,
+        "2026-01-01T00:00:00.000Z"
+      );
+      seedLessonProgress(
+        student2.id,
+        lesson1.id,
+        schema.LessonProgressStatus.InProgress
+      );
+      seedLessonProgress(
+        student3.id,
+        lesson1.id,
+        schema.LessonProgressStatus.InProgress
+      );
+      // Lesson Two: 3 started, 2 completed → 67.
+      seedLessonProgress(
+        base.user.id,
+        lesson2.id,
+        schema.LessonProgressStatus.Completed,
+        "2026-01-01T00:00:00.000Z"
+      );
+      seedLessonProgress(
+        student2.id,
+        lesson2.id,
+        schema.LessonProgressStatus.Completed,
+        "2026-01-02T00:00:00.000Z"
+      );
+      seedLessonProgress(
+        student3.id,
+        lesson2.id,
+        schema.LessonProgressStatus.InProgress
+      );
+
+      expect(getLessonCompletionRates(base.course.id)).toEqual([
+        {
+          lessonId: lesson1.id,
+          title: "Lesson One",
+          startedCount: 3,
+          completedCount: 1,
+          rate: 33,
+        },
+        {
+          lessonId: lesson2.id,
+          title: "Lesson Two",
+          startedCount: 3,
+          completedCount: 2,
+          rate: 67,
+        },
+      ]);
+    });
+
+    it("sorts by rate ascending, worst-performing lesson first", () => {
+      const student2 = createStudent("Student Two", "student2@example.com");
+
+      const module1 = createModule(base.course.id, "Module One", 1);
+      const module2 = createModule(base.course.id, "Module Two", 2);
+      const lesson1 = createLesson(module1.id, "Lesson One", 1);
+      const lesson2 = createLesson(module1.id, "Lesson Two", 2);
+      const lesson3 = createLesson(module2.id, "Lesson Three", 1);
+
+      // Lesson One: 2 of 2 completed → 100.
+      seedLessonProgress(
+        base.user.id,
+        lesson1.id,
+        schema.LessonProgressStatus.Completed,
+        "2026-01-01T00:00:00.000Z"
+      );
+      seedLessonProgress(
+        student2.id,
+        lesson1.id,
+        schema.LessonProgressStatus.Completed,
+        "2026-01-02T00:00:00.000Z"
+      );
+      // Lesson Two: 1 of 2 completed → 50.
+      seedLessonProgress(
+        base.user.id,
+        lesson2.id,
+        schema.LessonProgressStatus.Completed,
+        "2026-01-01T00:00:00.000Z"
+      );
+      seedLessonProgress(
+        student2.id,
+        lesson2.id,
+        schema.LessonProgressStatus.InProgress
+      );
+      // Lesson Three: 2 started, 0 completed → 0.
+      seedLessonProgress(
+        base.user.id,
+        lesson3.id,
+        schema.LessonProgressStatus.InProgress
+      );
+      seedLessonProgress(
+        student2.id,
+        lesson3.id,
+        schema.LessonProgressStatus.InProgress
+      );
+
+      expect(getLessonCompletionRates(base.course.id)).toEqual([
+        {
+          lessonId: lesson3.id,
+          title: "Lesson Three",
+          startedCount: 2,
+          completedCount: 0,
+          rate: 0,
+        },
+        {
+          lessonId: lesson2.id,
+          title: "Lesson Two",
+          startedCount: 2,
+          completedCount: 1,
+          rate: 50,
+        },
+        {
+          lessonId: lesson1.id,
+          title: "Lesson One",
+          startedCount: 2,
+          completedCount: 2,
+          rate: 100,
+        },
+      ]);
+    });
+
+    it("breaks rate ties in course order across module boundaries", () => {
+      const student2 = createStudent("Student Two", "student2@example.com");
+
+      const module1 = createModule(base.course.id, "Module One", 1);
+      const module2 = createModule(base.course.id, "Module Two", 2);
+      // Both at 50. The module-2 lesson has the lower position (1), so a
+      // position-only tie-break would wrongly put it first — module rank wins.
+      const first = createLesson(module1.id, "First", 2);
+      const second = createLesson(module2.id, "Second", 1);
+
+      // First: 1 of 2 completed → 50.
+      seedLessonProgress(
+        base.user.id,
+        first.id,
+        schema.LessonProgressStatus.Completed,
+        "2026-01-01T00:00:00.000Z"
+      );
+      seedLessonProgress(
+        student2.id,
+        first.id,
+        schema.LessonProgressStatus.InProgress
+      );
+      // Second: 1 of 2 completed → 50.
+      seedLessonProgress(
+        base.user.id,
+        second.id,
+        schema.LessonProgressStatus.Completed,
+        "2026-01-01T00:00:00.000Z"
+      );
+      seedLessonProgress(
+        student2.id,
+        second.id,
+        schema.LessonProgressStatus.InProgress
+      );
+
+      expect(getLessonCompletionRates(base.course.id)).toEqual([
+        {
+          lessonId: first.id,
+          title: "First",
+          startedCount: 2,
+          completedCount: 1,
+          rate: 50,
+        },
+        {
+          lessonId: second.id,
+          title: "Second",
+          startedCount: 2,
+          completedCount: 1,
+          rate: 50,
+        },
+      ]);
+    });
+
+    it("does not include lessons from other courses", () => {
+      const student2 = createStudent("Student Two", "student2@example.com");
+      const student3 = createStudent("Student Three", "student3@example.com");
+
+      const otherCourse = createCourse("Other Course", "other-course");
+      const otherModule = createModule(otherCourse.id, "Other Module", 1);
+      const otherLesson = createLesson(otherModule.id, "Other Lesson", 1);
+
+      const module = createModule(base.course.id, "Module One", 1);
+      const lesson = createLesson(module.id, "Lesson One", 1);
+
+      seedLessonProgress(
+        base.user.id,
+        lesson.id,
+        schema.LessonProgressStatus.InProgress
+      );
+      seedLessonProgress(
+        student2.id,
+        lesson.id,
+        schema.LessonProgressStatus.Completed,
+        "2026-01-01T00:00:00.000Z"
+      );
+      // Out-of-course rows for both progress queries: the completed row
+      // exercises the completed query's lessonId scope, the in_progress
+      // row the started query's.
+      seedLessonProgress(
+        base.user.id,
+        otherLesson.id,
+        schema.LessonProgressStatus.Completed,
+        "2026-01-01T00:00:00.000Z"
+      );
+      seedLessonProgress(
+        student3.id,
+        otherLesson.id,
+        schema.LessonProgressStatus.InProgress
+      );
+
+      expect(getLessonCompletionRates(base.course.id)).toEqual([
+        {
+          lessonId: lesson.id,
+          title: "Lesson One",
+          startedCount: 2,
+          completedCount: 1,
+          rate: 50,
+        },
       ]);
     });
   });

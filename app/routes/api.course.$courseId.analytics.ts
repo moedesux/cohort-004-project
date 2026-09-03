@@ -7,6 +7,7 @@ import {
   getCourseAnalytics,
   getEnrollmentTimeline,
   getLessonDropOffRates,
+  getLessonCompletionRates,
 } from "~/services/analyticsService";
 import { UserRole } from "~/db/schema";
 
@@ -53,5 +54,6 @@ export async function loader({ request, params }: Route.LoaderArgs) {
     completionRate: analytics.avgCompletionRate,
     timeline: getEnrollmentTimeline(courseId),
     dropOff: getLessonDropOffRates(courseId),
+    lessonCompletion: getLessonCompletionRates(courseId),
   });
 }
